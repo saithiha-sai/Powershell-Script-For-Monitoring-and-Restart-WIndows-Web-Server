@@ -1,0 +1,66 @@
+<#
+UrlMonitor-Restart404.ps1
+Monitors a URL and restarts IIS (W3SVC) if HTTP 404 is returned.
+Logs all actions to a file.
+#>
+
+param(
+    [string]$Url = 'http://192.168.xxxxx/',
+    [int]$IntervalSeconds = 30,
+    [string]$LogFile = "C:\Users\Administrator\Desktop\webchecklog.txt"
+)
+
+# --- helper ---
+function Write-Log {
+    param($msg, $level='INFO')
+    $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    "$ts [$level] $msg" | Out-File -FilePath $LogFile -Append -Encoding UTF8
+    Write-Host "$ts [$level] $msg"
+}
+
+# Ensure log file exists
+if (-not (Test-Path $LogFile)) { New-Item -Path $LogFile -ItemType File -Force | Out-Null }
+
+Write-Log "Starting URL monitor for 404 detection. Url=$Url Interval=${IntervalSeconds}s"
+
+$wasDown = $false
+
+while ($true) {
+    $status = $null
+    $success = $false
+
+    try {
+        $resp = Invoke-WebRequest -Uri $Url -Method Head -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+        $status = $resp.StatusCode
+        $success = $true
+    } catch {
+        $ex = $_.Exception
+        if ($ex.Response) {
+            try { $status = $ex.Response.StatusCode.Value__ } catch { $status = 0 }
+        } else {
+            $status = 0
+        }
+    }
+
+    if ($success -and $status -eq 200) {
+        if ($wasDown) {
+            Write-Log "Service is now normal"
+            $wasDown = $false
+        } else {
+            Write-Log "UP -> HTTP $status"
+        }
+    } elseif ($status -eq 0) {
+        Write-Log "HTTP 404 detected. Restarting IIS service..."
+        try {
+            Restart-Service -Name W3SVC -Force -ErrorAction Stop
+            Write-Log "IIS service restarted successfully"
+        } catch {
+            Write-Log "Failed to restart IIS: $_" "ERROR"
+        }
+        $wasDown = $true
+    } else {
+        Write-Log "Unexpected HTTP status: $status"
+    }
+
+    Start-Sleep -Seconds $IntervalSeconds
+}
